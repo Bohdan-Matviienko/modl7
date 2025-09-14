@@ -23,32 +23,26 @@ class Name(Field):
 
 
 class Phone(Field):
-    """Телефон — рівно 10 цифр."""
+    """Телефон — рівно 10 цифр, без інших символів."""
     def __init__(self, value: str):
-        cleaned = "".join(ch for ch in value if ch.isdigit())
-        if len(cleaned) != 10:
+        raw = value.strip()
+        if not (raw.isdigit() and len(raw) == 10):
             raise ValueError("Номер телефону має складатися рівно з 10 цифр.")
-        super().__init__(cleaned)
+        super().__init__(raw)
 
 
 class Birthday(Field):
     """
     День народження у форматі DD.MM.YYYY.
-    Зберігаємо у value вихідний рядок (нормалізований), а також парсимо у self._date (datetime.date).
+    Клас має лише поле value (рядок). Валідація і нормалізація під час ініціалізації.
     """
     def __init__(self, value: str):
         try:
-            dt = datetime.strptime(value, "%d.%m.%Y").date()
+            dt = datetime.strptime(value.strip(), "%d.%m.%Y").date()
         except ValueError:
             raise ValueError("Invalid date format. Use DD.MM.YYYY")
-        # Зафіксуємо нормалізований запис (з провідними нулями)
         normalized = dt.strftime("%d.%m.%Y")
         super().__init__(normalized)
-        self._date: date = dt
-
-    @property
-    def as_date(self) -> date:
-        return self._date
 
 
 # ============================
@@ -62,18 +56,17 @@ class Record:
     def __init__(self, name: str):
         self.name = Name(name)
         self.phones: List[Phone] = []
-        self.birthday: Optional(Birthday) = None
+        self.birthday: Optional[Birthday] = None
 
     # --- робота з телефонами ---
     def add_phone(self, phone: str) -> None:
         p = Phone(phone)
-        # уникаємо дублю
         if any(ph.value == p.value for ph in self.phones):
             return
         self.phones.append(p)
 
     def remove_phone(self, phone: str) -> None:
-        cleaned = Phone(phone).value  # перевірка формату, беремо нормалізоване
+        cleaned = Phone(phone).value  # перевірка формату + нормалізація
         for i, ph in enumerate(self.phones):
             if ph.value == cleaned:
                 del self.phones[i]
@@ -81,7 +74,7 @@ class Record:
         raise ValueError("Цього номеру немає у контакті.")
 
     def edit_phone(self, old: str, new: str) -> None:
-        old_clean = Phone(old).value  # валідація і нормалізація
+        old_clean = Phone(old).value
         new_phone = Phone(new)
         for ph in self.phones:
             if ph.value == old_clean:
@@ -92,8 +85,6 @@ class Record:
     # --- робота з днем народження ---
     def add_birthday(self, birthday_str: str) -> None:
         if self.birthday is not None:
-            # За бажанням можна дозволити перезапис — тоді просто призначити нове значення.
-            # Тут зробимо явне повідомлення:
             raise ValueError("День народження вже задано для цього контакту.")
         self.birthday = Birthday(birthday_str)
 
@@ -131,7 +122,7 @@ class AddressBook(UserDict):
         Якщо ДН на вихідних — переносимо привітання на найближчий понеділок.
         """
         today = date.today()
-        end_date = today + timedelta(days=days - 1)  # включно з today => інтервал довжиною `days`
+        end_date = today + timedelta(days=days - 1)
 
         result: List[Dict[str, str]] = []
 
@@ -139,14 +130,13 @@ class AddressBook(UserDict):
             if not rec.birthday:
                 continue
 
-            # День народження у поточному році
-            bday_this_year = rec.birthday.as_date.replace(year=today.year)
+            # Парсимо з value щоразу (у класі Birthday зберігаємо тільки value)
+            bday = datetime.strptime(rec.birthday.value, "%d.%m.%Y").date()
 
-            # Якщо вже минув цього року — розглядаємо наступний рік
+            bday_this_year = bday.replace(year=today.year)
             if bday_this_year < today:
                 bday_this_year = bday_this_year.replace(year=today.year + 1)
 
-            # Чи потрапляє у вікно [today, end_date] за ОРИГІНАЛЬНОЮ датою
             if today <= bday_this_year <= end_date:
                 greet_date = self._shift_if_weekend(bday_this_year)
                 result.append({
@@ -154,16 +144,15 @@ class AddressBook(UserDict):
                     "birthday": greet_date.strftime("%d.%m.%Y")
                 })
 
-        # Можемо впорядкувати за датою привітання для гарного виводу
         result.sort(key=lambda x: datetime.strptime(x["birthday"], "%d.%m.%Y").date())
         return result
 
     @staticmethod
     def _shift_if_weekend(d: date) -> date:
         # 5 = Saturday, 6 = Sunday
-        if d.weekday() == 5:   # субота -> понеділок
+        if d.weekday() == 5:
             return d + timedelta(days=2)
-        if d.weekday() == 6:   # неділя -> понеділок
+        if d.weekday() == 6:
             return d + timedelta(days=1)
         return d
 
@@ -180,18 +169,19 @@ def input_error(func: Callable) -> Callable:
             return func(*args, **kwargs)
         except IndexError:
             return "Недостатньо аргументів для команди."
+        except AttributeError:
+            # Напр., record = None → спроба доступу до атрибутів/методів
+            return "Контакт не знайдено."
         except KeyError as e:
             return str(e) if str(e) else "Не знайдено."
         except ValueError as e:
             return str(e)
         except Exception as e:
-            # на всяк випадок — контрольоване повідомлення
             return f"Сталася помилка: {e}"
     return wrapper
 
 
 def parse_input(user_input: str) -> Tuple[str, List[str]]:
-    """Повертає (command, args). Перша «слово»-команда, решта — аргументи як є."""
     user_input = user_input.strip()
     if not user_input:
         return "", []
@@ -223,9 +213,7 @@ def add_contact(args: List[str], book: AddressBook) -> str:
 def change_phone(args: List[str], book: AddressBook) -> str:
     name, old_phone, new_phone, *_ = args
     record = book.find(name)
-    if record is None:
-        raise KeyError("Контакт не знайдено.")
-    record.edit_phone(old_phone, new_phone)
+    record.edit_phone(old_phone, new_phone)  # якщо record=None → AttributeError → декоратор
     return "Phone changed."
 
 
@@ -233,9 +221,7 @@ def change_phone(args: List[str], book: AddressBook) -> str:
 def show_phone(args: List[str], book: AddressBook) -> str:
     name, *_ = args
     record = book.find(name)
-    if record is None:
-        raise KeyError("Контакт не знайдено.")
-    if not record.phones:
+    if not record.phones:  # якщо record=None → AttributeError → декоратор
         return "У контакту немає телефонів."
     return ", ".join(ph.value for ph in record.phones)
 
@@ -252,17 +238,11 @@ def show_all(_: List[str], book: AddressBook) -> str:
     return "\n".join(lines)
 
 
-# --- нові, пов'язані з днями народження ---
-
 @input_error
 def add_birthday(args: List[str], book: AddressBook) -> str:
     name, bday_str, *_ = args
     record = book.find(name)
-    if record is None:
-        # дозволимо створити новий контакт і одразу додати ДН — це зручно
-        record = Record(name)
-        book.add_record(record)
-    record.add_birthday(bday_str)
+    record.add_birthday(bday_str)  # якщо record=None → AttributeError → декоратор
     return "Birthday added."
 
 
@@ -270,33 +250,27 @@ def add_birthday(args: List[str], book: AddressBook) -> str:
 def show_birthday(args: List[str], book: AddressBook) -> str:
     name, *_ = args
     record = book.find(name)
-    if record is None:
-        raise KeyError("Контакт не знайдено.")
-    if not record.birthday:
+    if not record.birthday:  # якщо record=None → AttributeError → декоратор
         return "Для цього контакту не задано дня народження."
     return record.birthday.value
 
 
 @input_error
 def birthdays(args: List[str], book: AddressBook) -> str:
-    # args ігноруємо (специфікація не вимагає додаткових параметрів)
     upcoming = book.get_upcoming_birthdays(days=7)
     if not upcoming:
         return "Найближчими 7 днями іменин немає."
 
-    # Згрупуємо по датах привітання
     by_date: Dict[str, List[str]] = {}
     for item in upcoming:
         by_date.setdefault(item["birthday"], []).append(item["name"])
 
-    # Відсортуємо дати привітання
     def parse_d(d: str) -> date:
         return datetime.strptime(d, "%d.%m.%Y").date()
 
     lines = []
     for d_str in sorted(by_date.keys(), key=parse_d):
         names = ", ".join(sorted(by_date[d_str]))
-        # покажемо також день тижня для зручності
         weekday = parse_d(d_str).strftime("%A")
         lines.append(f"{d_str} ({weekday}): {names}")
     return "\n".join(lines)
